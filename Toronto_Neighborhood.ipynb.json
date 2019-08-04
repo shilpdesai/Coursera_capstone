@@ -1,0 +1,423 @@
+{
+ "cells": [
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "import numpy as np # data in a vectorized manner manipulation\n",
+    "import pandas as pd # data analsysis\n",
+    "from pandas.io.json import json_normalize # tranform JSON file into a pandas dataframe\n",
+    "import json # JSON files manipulation\n",
+    "import requests # HTTP library\n",
+    "from bs4 import BeautifulSoup # scraping library\n",
+    "\n",
+    "from sklearn.cluster import KMeans # clustering algorithm\n",
+    "\n",
+    "pd.set_option('display.max_columns', None)\n",
+    "pd.set_option('display.max_rows', None)\n",
+    "\n",
+    "# Matplotlib and associated plotting modules\n",
+    "import matplotlib.cm as cm\n",
+    "import matplotlib.colors as colors\n",
+    "\n",
+    "!conda install -c conda-forge folium=0.5.0 --yes\n",
+    "import folium # map rendering library\n",
+    "\n",
+    "print('Libraries imported.')\n"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "url = \"https://en.wikipedia.org/wiki/List_of_postal_codes_of_Canada:_M\"\n",
+    "\n",
+    "text_result = requests.get(url).text #get the entire html of the article as a str\n",
+    "html_parsed_result = BeautifulSoup(text_result, 'html.parser') #transform the text to html\n",
+    "\n",
+    "neightborhood_info_table = html_parsed_result.find('table', class_ = 'wikitable')\n",
+    "neightborhood_rows = neightborhood_info_table.find_all('tr')\n",
+    "\n",
+    "# extract the info ('Postcode', 'Borough', 'Neighbourhood') from the table\n",
+    "neightborhood_info = []\n",
+    "for row in neightborhood_rows:\n",
+    "    info = row.text.split('\\n')[1:-1] # remove empty str (first and last items)\n",
+    "    neightborhood_info.append(info)\n",
+    "    \n",
+    "neightborhood_info[0:10]"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "#create a Neighborhoods dataframe\n",
+    "neightborhood_info[0][-1] = 'Neighborhood' # change to american spelling\n",
+    "neighborhood_df = pd.DataFrame(neightborhood_info[1:], columns=neightborhood_info[0])\n",
+    "\n",
+    "neighborhood_df.head(10)"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "not_assigned_boroughs = neighborhood_df.index[neighborhood_df['Borough'] == 'Not assigned']\n",
+    "not_assigned_neighborhoods = neighborhood_df.index[neighborhood_df['Neighborhood'] == 'Not assigned']\n",
+    "not_assigned_neighborhoods_and_borough = not_assigned_boroughs & not_assigned_neighborhoods\n"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "neighborhood_df.drop(neighborhood_df.index[not_assigned_boroughs], inplace=True)\n",
+    "neighborhood_df.reset_index(drop=True, inplace=True)\n",
+    "\n",
+    "neighborhood_df.head(10)"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "not_assigned_neighborhoods = neighborhood_df.index[neighborhood_df['Neighborhood'] == 'Not assigned'] # run this again because the indexes on the dataframe where reset\n",
+    "\n",
+    "for idx in not_assigned_neighborhoods:\n",
+    "    neighborhood_df['Neighborhood'][idx] = neighborhood_df['Borough'][idx]\n",
+    "    \n",
+    "neighborhood_df.head(10)"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "group = neighborhood_df.groupby('Postcode')\n",
+    "grouped_neighborhoods = group['Neighborhood'].apply(lambda x: \"%s\" % ', '.join(x))\n",
+    "grouped_boroughs = group['Borough'].apply(lambda x: set(x).pop())\n",
+    "grouped_df = pd.DataFrame(list(zip(grouped_boroughs.index, grouped_boroughs, grouped_neighborhoods)))\n",
+    "grouped_df.columns = ['Postcode', 'Borough', 'Neighborhood']\n",
+    "\n",
+    "grouped_df.head(10)"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "print('The DataFrame shape is', grouped_df.shape)"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "Link = 'https://cocl.us/Geospatial_data'\n",
+    "coordinates_df = pd.read_csv('https://cocl.us/Geospatial_data') # transform the csv file into a dataframe\n",
+    "print('The coordinates dataframe shape is', coordinates_df.shape)\n",
+    "coordinates_df.head()"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "postcodes_with_coordinates_df = grouped_df.join(coordinates_df.set_index('Postal Code'), on='Postcode')\n",
+    "\n",
+    "postcodes_with_coordinates_df.head(16)"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {
+    "scrolled": true
+   },
+   "outputs": [],
+   "source": [
+    "map = folium.Map(location=[43.6532,-79.3832], zoom_start=11)\n",
+    "\n",
+    "for location in postcodes_with_coordinates_df.itertuples(): #iterate each row of the dataframe\n",
+    "    label = 'Postal Code: {};  Borough: {};  Neighborhoods: {}'.format(location[1], location[2], location[3])\n",
+    "    label = folium.Popup(label, parse_html=True)    \n",
+    "    folium.CircleMarker(\n",
+    "        [location[-2], location[-1]],\n",
+    "        radius=1,\n",
+    "        color='blue',\n",
+    "        fill=True,\n",
+    "        fill_color='#3186cc',\n",
+    "        fill_opacity=0.7,\n",
+    "        parse_html=False).add_to(map) \n",
+    "    folium.Circle(\n",
+    "        radius=500,\n",
+    "        popup=label,\n",
+    "        location=[location[-2], location[-1]],\n",
+    "        color='#3186cc',\n",
+    "        fill=True,\n",
+    "        fill_color='#3186cc'\n",
+    "    ).add_to(map) \n",
+    "    \n",
+    "map"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "from geopy.distance import great_circle\n",
+    "\n",
+    "#function to get the closest postcode pair and the distance using latitude and longitude\n",
+    "def closest_postcode(postcode, postcodes):\n",
+    "    postcode = np.asarray(postcode).reshape(1,-1)\n",
+    "    postcodes = np.asarray(postcodes)\n",
+    "    distances = [great_circle(postcode, point).meters for point in postcodes]\n",
+    "    closest_postcode_index = np.argmin(distances)\n",
+    "    return [round(distances[closest_postcode_index]), closest_postcode_index]"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": []
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "import matplotlib.pyplot as plt\n",
+    "\n",
+    "X = postcodes_with_coordinates_df[['Longitude', 'Latitude']]\n",
+    "\n",
+    "scatter_plot = X.plot.scatter(x='Longitude', \n",
+    "               y='Latitude',  \n",
+    "               fontsize = 16,\n",
+    "               figsize=(15, 10))\n",
+    "\n",
+    "scatter_plot.set_yticklabels([])\n",
+    "scatter_plot.set_xticklabels([])\n",
+    "scatter_plot.set_xticks([])\n",
+    "scatter_plot.set_yticks([])\n",
+    "scatter_plot.spines['top'].set_color(None)\n",
+    "scatter_plot.spines['right'].set_color(None)\n",
+    "plt.xlabel('Longitude', fontsize=16)\n",
+    "plt.ylabel('Latitude', fontsize=16)\n",
+    "scatter_plot.set_title('Toronto Postal Codes Position', fontsize=16)\n",
+    "\n",
+    "scatter_plot.set_yticklabels(labels = 'Latitude', fontdict={'fontsize': 20})\n",
+    "plt.show()"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "#To explore the distance function, the closest postcode to the first example in the dataframe is found\n",
+    "coordinates = postcodes_with_coordinates_df[['Latitude', 'Longitude']]\n",
+    "\n",
+    "distance, closest_point_index = closest_postcode(coordinates[:1], coordinates[~coordinates.index.isin([0])])\n",
+    "close_points = X[:1].append(X[closest_point_index+1:closest_point_index+2])\n",
+    "close_points"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "from math import isnan\n",
+    "\n",
+    "for lat, lng, idx in zip(postcodes_with_coordinates_df['Latitude'], postcodes_with_coordinates_df['Longitude'], postcodes_with_coordinates_df.index):\n",
+    "    distance, closest_point_index = closest_postcode([lat,lng], coordinates[~coordinates.index.isin([idx])])\n",
+    "    postcodes_with_coordinates_df.at[idx,'Distance'] = np.int64(distance//2) #use the half of the disstance to avoid overlapping\n",
+    "    \n",
+    "postcodes_with_coordinates_df.head(15)"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {
+    "scrolled": true
+   },
+   "outputs": [],
+   "source": [
+    "map = folium.Map(location=[43.6532,-79.3832], zoom_start=11)\n",
+    "\n",
+    "for location in postcodes_with_coordinates_df.itertuples(): #iterate each row of the dataframe\n",
+    "    label = 'Postal Code: {};  Borough: {};  Neighborhoods: {}'.format(location[1], location[2], location[3])\n",
+    "    label = folium.Popup(label, parse_html=True)    \n",
+    "    folium.CircleMarker(\n",
+    "        [location[-3], location[-2]],\n",
+    "        radius=1,\n",
+    "        color='blue',\n",
+    "        fill=True,\n",
+    "        fill_color='#3186cc',\n",
+    "        fill_opacity=0.7,\n",
+    "        parse_html=False).add_to(map) \n",
+    "    folium.Circle(\n",
+    "        radius=location[-1],\n",
+    "        popup=label,\n",
+    "        location=[location[-3], location[-2]],\n",
+    "        color='#3186cc',\n",
+    "        fill=True,\n",
+    "        fill_color='#3186cc'\n",
+    "    ).add_to(map) \n",
+    "    \n",
+    "map"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "CLIENT_ID = 'YRR3SG31RPHFUCA4X4AYD235A1OUKVK2OWRWGSR5CZZ4QTXP' \n",
+    "CLIENT_SECRET = 'PUE0Y0D44TANWTU3NAG2TZI042GHKV3CC0B4H52RPDUQO4M' \n",
+    "VERSION = '20180605' \n",
+    "print('Your credentails:')\n",
+    "print('CLIENT_ID: ' + CLIENT_ID)\n",
+    "print('CLIENT_SECRET:' + CLIENT_SECRET)"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "#function to format url\n",
+    "def format_url(lat, lng, radius=500, limit=100):\n",
+    "    return 'https://api.foursquare.com/v2/venues/explore?client_id={}&client_secret={}&ll={},{}&v={}&radius={}&limit={}'.format(CLIENT_ID, CLIENT_SECRET, \n",
+    "        lat, lng, VERSION, radius, limit)\n"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "first_postcode = postcodes_with_coordinates_df.iloc[2, :]\n",
+    "url = format_url(first_postcode['Latitude'], first_postcode['Longitude'], first_postcode['Distance'])\n",
+    "\n",
+    "url"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "#function to get batch of venues as a dataframe\n",
+    "def get_venues(url):\n",
+    "    results = requests.get(url).json()\n",
+    "    venues = results['response']['groups'][0]['items']\n",
+    "    return json_normalize(venues)"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "venues_df = get_venues(url)\n",
+    "\n",
+    "venues_df.head()"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "#function to clean the venues dataframe\n",
+    "def clean_df(df):\n",
+    "    relevant_columns = ['venue.categories', 'venue.location.lat', 'venue.location.lng', 'venue.name']\n",
+    "    clean_df = df.loc[:,relevant_columns]\n",
+    "\n",
+    "    #rename columns\n",
+    "    clean_df.columns = ['Category', 'Lat', 'Lng', 'Name']\n",
+    "    return clean_df \n",
+    "\n",
+    "venues_df = clean_df(venues_df)\n",
+    "venues_df.head()"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": []
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": []
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": []
+  }
+ ],
+ "metadata": {
+  "kernelspec": {
+   "display_name": "Python 3.6",
+   "language": "python",
+   "name": "python3"
+  },
+  "language_info": {
+   "codemirror_mode": {
+    "name": "ipython",
+    "version": 3
+   },
+   "file_extension": ".py",
+   "mimetype": "text/x-python",
+   "name": "python",
+   "nbconvert_exporter": "python",
+   "pygments_lexer": "ipython3",
+   "version": "3.6.8"
+  }
+ },
+ "nbformat": 4,
+ "nbformat_minor": 1
+}
